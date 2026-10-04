@@ -7,44 +7,57 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-parts.url = "github:hercules-ci/flake-parts";
-    linux-pkgmanager.url = "github:nazozokc/linux-pkgmanager.nix";
+
+    linux-pkgmanager.nix = {
+      url = "github:nazozokc/linux-pkgmanager.nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = inputs@{ flake-parts, linux-pkgmanager, ... }:
+  outputs =
+    inputs@{ flake-parts, ... }:
     flake-parts.lib.mkFlake { inherit inputs; } {
       systems = [ "x86_64-linux" "aarch64-linux" ];
-      imports = [ linux-pkgmanager.flakeModules.default ];
+      imports = [ inputs.linux-pkgmanager.nix.flakeModules.default ];
 
       nlp = {
         enable = true;
-        autoDetect = true;
         packages = {
-          apt    = [ "bat" "eza" "curl" ];
           pacman = [ "bat" "eza" "curl" ];
-          dnf    = [ "bat" "eza" "curl" ];
+          apt = [ "bat" "eza" "curl" ];
+          dnf = [ "bat" "eza" "curl" ];
         };
       };
     };
 }
 ```
 
+`packages` に書いた pm だけが対象になる。`./packages/apt.nix` のようなファイルを
+渡してもよい（[宣言の書き方](#宣言の書き方)）。
+
+```console
+$ nix run .#nlp-diff     # 不足分を見る (副作用なし)
+$ nix run .#nlp-apply    # 不足分だけ入れる
+```
+
 ### Home Manager 単体で使う場合
 
 ```nix
 { inputs, ... }: {
-  imports = [ inputs.linux-pkgmanager.homeManagerModules.default ];
+  imports = [ inputs.linux-pkgmanager.nix.flakeModules.home-manager ];
   programs.nlp = {
     enable = true;
-    autoDetect = true;
     commonPackages = [ "curl" "git" "jq" ];
     packages = {
-      apt    = [ "bat" "eza" ];
       pacman = [ "bat" "eza" ];
-      dnf    = [ "bat" "eza" ];
+      apt = [ "bat" "eza" ];
+      dnf = [ "bat" "eza" ];
     };
   };
 }
 ```
+
+`home.packages` に載るのは `nlp` だけ。`switch` のあとに `nlp apply` を手で打つ。
 
 `nix flake init -t github:nazozokc/linux-pkgmanager.nix#minimal` でも同じ最小構成を得られます。
 
@@ -74,16 +87,20 @@ $ nix run .#adopt > packages/pacman.nix
 
 ## 対応 pm
 
-| pm     | 実行ファイル | 不足判定                         |
-| ------ | ------------ | -------------------------------- |
-| pacman | `pacman`     | `pacman -T`（不足名を出力）      |
-| apt    | `apt-get`    | `apt-get install --simulate`     |
-| dnf    | `dnf`        | `rpm -q`（充足名を出力して反転） |
-| zypper | `zypper`     | `rpm -q`                         |
-| yum    | `yum`        | `rpm -q`                         |
+| pm     | 実行ファイル | 明示導入の照会            | 不足判定                                   |
+| ------ | ------------ | ------------------------- | ------------------------------------------ |
+| pacman | `pacman`     | `pacman -Qqe`             | `pacman -T`（不足名を出す）                |
+| apt    | `apt-get`    | `apt-mark showmanual`     | `apt-get install --simulate`（`Inst ` 行） |
+| dnf    | `dnf`        | `rpm -qa --userinstalled` | `rpm -q`（充足名を出して反転）             |
+| zypper | `zypper`     | `rpm -qa --userinstalled` | `rpm -q`                                   |
+| yum    | `yum`        | `rpm -qa`                 | `rpm -q`                                   |
 
-ホストに 1 つでも見つかれば、その pm だけを使う。
+ホストに 1 つでも見つかれば、その pm だけを使う。探す順は
+`apt` → `dnf` → `pacman` → `yum` → `zypper`（WSL なら `apt` が先に取られる）。
 `status` は 5 つ全部を一覧する。
+
+`yum` は RHEL 7 の rpm に `--userinstalled` が無いので、明示導入と依存導入を
+区別できない。`unmanaged` には依存も混ざる。
 
 ## 使い方
 
@@ -108,9 +125,8 @@ $ nix run .#status       # 検出した pm と宣言の件数
 ```console
 $ nix run .#adopt > packages/apt.nix
 
-  注意  packages/apt.nix には既に 3 件の宣言があります。
-        adopt は導入済み全部を出します。上書きせず、既存宣言と共通する名前を
-        消してから使ってください
+  注意  apt には既に 3 件の宣言があります。adopt は導入済み全部を出します
+  上書きせず、既存宣言と共通する名前を消してから使ってください
 ```
 
 出るのは「その pm で明示導入済み」のスナップショットで、既存宣言への差分では
@@ -119,24 +135,46 @@ $ nix run .#adopt > packages/apt.nix
 ```console
 $ nix run .#adopt
 
-  # packages/apt.nix — apt で導入するパッケージ
+  # packages/pacman.nix — pacman で導入するパッケージ
   #
+  # nlp adopt が生成しました (ホスト: arch)。
   # 明示導入済みパッケージをそのまま列挙しています。
-  #   - ここに書くのは「システムのリソース」だけ。
-  #   - 依存として入ったものは含みません。
-  #   - Nix (home-manager の home.packages) 経由で入れる。ここには書かない。
-  #   - 照合は `apt-get install --simulate` で行います。
+  #
+  # ここに書くのは「システムのリソース」だけ。
+  #   - /etc の設定、/usr/share/man の man page
+  #   - systemd unit、カーネルモジュール、firmware
+  # 逆に、ユーザーの製品 (エディタ、言語ランタイム、CLI ツール) は
+  # Nix (home-manager の home.packages) 経由で入れる。ここには書かない。
+  # 二重管理になり、片方だけ古いと事故る。
+  #
+  # 宣言から外したパッケージは削除されません。unmanaged として
+  # 報告されるだけで、何もしません。
+  #
+  # 照合は `pacman -T` で行います。
+
   [
-    "bat"
+    "git"
     "man-db"
+    "vim"
   ]
 ```
 
-- pm が検出しなかったものは出さない（5 pm 全部が Garett になるわけではない）
+人が読む行と注意は標準エラーへ出る。上の実行で同時に出ているのは:
+
+```console
+  pacman: pm が受理できないパッケージ名を宣言から外しました
+    - a b
+  使える文字: 英数字と . + - _ :
+  注意  pacman には既に 2 件の宣言があります。adopt は導入済み全部を出します
+  上書きせず、既存宣言と共通する名前を消してから使ってください
+```
+
+- pm が検出しなかったものは出さない（5 pm 全部が空のリストになるわけではない）
 - 宣言検査が却下する名前は除外し、stderr に列挙する
   （pm の出力をそのまま宣言にすると、**評価時に落ちる宣言**を自分で作ってしまう）
 - 照会が失敗したら偽の空リストは出さず、終了コード 2 で止まる
   （空の `[ ]` は「導入済み 0 件」という宣言になり、`diff` が常に「不足なし」になる）
+- 照会が 0 件を返した場合は空のリストを出すが、「1 個も返らなかった」と stderr で言う
 
 ### 出る情報
 
@@ -147,25 +185,103 @@ $ nix run .#diff
 
   host     arch (pacman) · 2 宣言
 
-  installed   0
-  missing     2
-    - bash-completion
+  installed   1
+  missing     1
     - man-db
   unmanaged  11  宣言に無いが明示導入済み
     - base
     - base-devel
-    ...
+    ... 他 9 個
 ```
 
+- `installed` … 宣言のうち不足でなかった分
 - `missing` … 宣言にあるが未導入。`apply` が入れる
 - `unmanaged` … 明示導入済みだが宣言に無い。**報告のみ**、何も起きない
+- 一覧は `missing` 20 件、`unmanaged` 10 件まで。超えた分は `... 他 n 個` で畳む
+  （省略されるのは表示だけで、宣言や照合には全部に入っている）
+- 宣言が空の pm を使うと `pacman は宣言なし (packages/pacman.nix)` だけ出して終わる
+
+```console
+$ nix run .#status
+
+  status · arch · pacman
+
+  pm       binary                       declared  lock
+    apt       (not found)                       3  -
+    dnf       (not found)                       2  -
+    pacman    pacman@/usr/bin/pacman            2  free
+    yum       (not found)                       2  -
+    zypper    (not found)                       2  -
+```
+
+`status` は pm に照会しない。実行ファイルのパス、宣言件数、ロックの有無だけを見る。
 
 ## 宣言の書き方
 
-`packages/<pm>.nix` に素のリストを書くだけ。パッケージ名は、その pm が
-受理する名前で書く。同じ用途でも pm をまたぐと名前が違うことがある。
-消費側の flake から使うときも、このファイルを `declared` に渡す形になる
-（[他の flake から使う](#他の-flake-から使う)）。
+宣言は 2 層ある。低位が `declared`、高位が `packages` などのオプションで、
+`declared` を書くと高位はすべて無視される。
+
+### 低位: `declared`
+
+pm 名 → リスト（またはファイル）をそのまま書く。優先順位の解決はない。
+
+```nix
+nlp.declared = {
+  pacman = ./packages/pacman.nix;
+  apt = [
+    "man-db"
+    "bat"
+  ];
+};
+```
+
+### 高位: `packages` / `commonPackages` / `managers`
+
+短い宣言を書くための層。`nix/lib/normalize.nix` が `declared` と同じ形に落とす。
+
+```nix
+nlp = {
+  packages = {
+    pacman = [
+      "man-db"
+      "bash-completion"
+    ];
+    apt = [ "man-db" "bash-completion" ];
+  };
+  commonPackages = [ "curl" "git" ];
+  managers.dnf.enable = true; # packages に書かずに pm を有効にする
+};
+```
+
+解決の順序（`nix/lib/normalize.nix`）:
+
+| 段階              | 内容                                                                    |
+| ----------------- | ----------------------------------------------------------------------- |
+| 1. どちらを使う   | `declared` が空でなければ `declared` だけを使う。高位はすべて無視する   |
+| 2. 有効な pm      | `packages` に pm 名がある ∪ `managers.<pm>.enable = true` ∪ 検出した pm |
+| 3. 宣言を組み立て | `packages.<pm> ++ commonPackages`。重複は 1 個に畳む                    |
+
+現行の実装そのままの注意:
+
+- `autoDetect = true` は `backends.<pm>.detect` を要求するが、`backends.nix` に
+  `detect` フィールドがまだ無いので **1 pm も有効にならない**。pm を列挙したい
+  ときは `packages` か `managers` を使う
+- `commonPackages` は「有効な pm」の宣言にだけ足される。有効な pm が 1 つも無い
+  と足す先が無いので、何もしない
+- `packages.<pm>` にファイル（パス）を書くと、そのパスがそのまま宣言になる。
+  `commonPackages` は連結しない
+- `managers.<pm>.enable = false` は pm を宣言から外す指定ではない。
+  `packages.<pm>` を書いている pm は有効なまま残る。宣言から外すのは
+  `packages` から消すこと
+- `update` サブモジュール（`enable` / `onActivation` / `flags`）は宣言だけで、
+  まだ実行体に配線していない。`nlp update` は手動で叩く
+- どちらの層でも宣言検査（[書けない名前](#書けない名前)）は同じものを通る
+
+### パッケージ名
+
+`packages/<pm>.nix` は素のリスト。パッケージ名は、その pm が受理する名前で書く。
+同じ用途でも pm をまたぐと名前が違うことがある。宣言は pm ごとに 1 ファイルに
+分けても、1 つの flake にインラインで書いてもよい。
 
 | 用途     | pacman            | apt               | dnf               | zypper / yum      |
 | -------- | ----------------- | ----------------- | ----------------- | ----------------- |
@@ -283,6 +399,9 @@ pm ごとに 1 ファイルなので、対象をまたぐ宣言は素直に書�
 apps.switch = config.apps.nlp-apply;
 ```
 
+`declared` の代わりに高位の `packages` / `commonPackages` / `managers` でもよい。
+解決の規則は [宣言の書き方](#宣言の書き方) に書いたとおり。
+
 ```console
 $ nix run .#nlp-diff     # 宣言と導入済みを比較 (副作用なし)
 $ nix run .#nlp-adopt    # 明示導入済みを宣言の雛形として出す (副作用なし)
@@ -295,12 +414,17 @@ $ nix run .#nlp-status   # 検出した pm と宣言の件数
 空にしたいときは `nlp.appPrefix = ""`。`nix run .` を diff にしたいときは
 `nlp.defaultApp = "diff"`。
 
-`declared` は部分指定でよい。書いた pm だけを使い、書かなかった pm は
+宣言は部分指定でよい。書いた pm だけを使い、書かなかった pm は
 空リスト（`diff` は「宣言なし」と表示）になる。
+
+`nlp.enable = false` にすると `packages.nlp` と apps を一切出さない。
+モジュールを `imports` に置いただけの変化で足したくないときの逃げ道。
+（home-manager 側は逆に `enable` の既定が `false`。）
 
 ### home-manager
 
-home-manager には `flakeModules.home-manager` を置く。出るのは
+home-manager には `flakeModules.home-manager` を置く（`flakeModules.homeManager` と
+`flakeModules.home-manager-nlp` は同じファイルの別名）。出るのは
 `home.packages` に載る nlp だけで、apps は出さない。
 
 ```nix
@@ -321,13 +445,25 @@ $ nlp adopt             # 明示導入済みを宣言の雛形として出す (�
 $ nlp apply             # 不足分だけ導入する (switch のあと手動)
 ```
 
-`enable` を `false` にすると `home.packages` に入らない。`apply` / `update` は
-`sudo` が要るので **activation では走らせない。** パスワード入力を
-activation に挟むと、非対話の `switch` や CI で必ず詰まる。
+`programs.nlp` には `declared` の代わりに `packages` / `commonPackages` /
+`managers` も書ける。解決の規則は flake-parts 版と同じ
+（[宣言の書き方](#宣言の書き方)）。`programs.nlp.package` を指定すれば、
+宣言はそのままに実行体だけを差し替えられる。
+
+`enable` の既定は `false`。`true` にすると `home.packages` に入る
+（Linux のときだけ。darwin には載らない）。`false` のままだと何も起きない。
+
+`apply` / `update` は `sudo` が要るので **activation では走らせない。**
+パスワード入力を activation に挟むと、非対話の `switch` や CI で必ず詰まる。
 運用は「switch のあとに `nlp apply`」で固定する。
 
 `flakeModules.default` と `flakeModules.home-manager` はどちらも `imports` に置く
 ものだが、同じ config に 2 つ入れてはならない。どちらか 1 つを選ぶ。
+
+`homeManagerModules.default` も同じモジュールを返す。ただし Nix は
+`homeManagerModules` を既知の flake output 名として知らないので、
+`nix flake check` が `warning: unknown flake output 'homeManagerModules'` を出す。
+警告を出したくないなら `flakeModules.home-manager` を使う。
 
 ### flake-parts を使わない場合
 
@@ -378,18 +514,28 @@ Boolean, or integer is expected
 
 公開しているもの:
 
-| output                      | 内容                                                                                |
-| --------------------------- | ----------------------------------------------------------------------------------- |
-| `flakeModules.default`      | flake-parts モジュール。`nlp.declared` から apps を出す                             |
-| `flakeModules.home-manager` | home-manager モジュール。`programs.nlp.declared` から `home.packages` へ nlp を出す |
-| `lib.mkApps`                | 宣言から `{ package, apps }` を返す関数                                             |
-| `lib.mkNlp`                 | 宣言を受け取って nlp の derivation を返す関数                                       |
-| `lib.pms`                   | 対応している pm 名の一覧                                                            |
-| `lib.backends`              | pm ごとのコマンド定義（純データ）                                                   |
-| `lib.validate`              | 宣言を検査して、通らなければ throw する関数                                         |
-| `lib.check`                 | 検査だけする。問題を文字列のリストで返す                                            |
-| `packages.<system>.nlp`     | その flake の宣言で組んだ nlp                                                       |
-| `apps.<system>.*`           | `diff` / `adopt` / `apply` / `update` / `status`                                    |
+| output                                      | 内容                                                                                       |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `flakeModules.default` / `flakeModules.nlp` | flake-parts モジュール。`nlp` の宣言から `packages.nlp` と `apps.nlp-*` を出します         |
+| `flakeModules.home-manager`                 | home-manager モジュール。`programs.nlp` の宣言から `home.packages` へ nlp を出します       |
+| `flakeModules.homeManager`                  | `flakeModules.home-manager` と同じファイル                                                 |
+| `flakeModules.home-manager-nlp`             | `flakeModules.home-manager` と同じファイル                                                 |
+| `homeManagerModules.default` / `.nlp`       | home-manager 用モジュールの別名。`nix flake check` が unknown flake output と警告します    |
+| `templates.default` / `templates.minimal`   | `nix flake init -t github:nazozokc/linux-pkgmanager.nix#minimal` の元になる最小構成        |
+| `lib.mkApps`                                | 宣言から `{ package, apps }` を返す関数                                                    |
+| `lib.mkNlp`                                 | 宣言を受け取って nlp の derivation を返す関数                                              |
+| `lib.pms`                                   | 対応している pm 名の一覧                                                                   |
+| `lib.backends`                              | pm ごとのコマンド定義（純データ）                                                          |
+| `lib.validate`                              | 宣言を検査して、通らなければ throw する関数                                                |
+| `lib.check`                                 | 検査だけする。問題を文字列のリストで返す                                                   |
+| `packages.<system>.nlp`                     | その flake の宣言で組んだ nlp                                                              |
+| `apps.<system>.*`                           | `diff` / `adopt` / `apply` / `update` / `status`（`defaultApp` を設定すれば `default` も） |
+| `checks.<system>.*`                         | `eval` / `shellcheck` / `fake-path` / `consumer` / `treefmt`                               |
+| `githubActions.matrix`                      | CI 専用。`nix flake check` が unknown flake output と警告します                            |
+
+`nixosModules` には出してない。Nix の flake schema は `nixosModules.<system>.<name>`
+を期待するので、このリポジトリの `{ default; nlp; }` という形は解釈されず捨てられる。
+NixOS で使う場合も home-manager 経由なので、`flakeModules.home-manager` を使う。
 
 このリポジトリ自身の `apps` は接頭辞なし（`nix run .#diff`）。
 消費側のモジュールは既定で `nlp-diff` のように接頭辞を付ける。
@@ -411,7 +557,7 @@ $ nix flake check --all-systems   # 5 pm すべての経路を検証
 $ nix fmt                          # nixfmt / shfmt / statix / deadnix / prettier
 ```
 
-4 層で守る。
+5 層で守る。
 
 | check               | 何を見る                                                                   |
 | ------------------- | -------------------------------------------------------------------------- |
@@ -419,6 +565,7 @@ $ nix fmt                          # nixfmt / shfmt / statix / deadnix / prettie
 | `checks.shellcheck` | 連結前の `nix/lib/script/*.sh` を lint する                                |
 | `checks.fake-path`  | 5 pm すべてのコマンド生成と差分計算を、PATH 差し替えで実測する             |
 | `checks.consumer`   | 公開 API を入力に載せた消費側 flake を実際に評価して、出た apps を起動する |
+| `checks.treefmt`    | `nix fmt` の整形チェック（treefmt-nix が出す）                             |
 
 `checks.fake-path` は `tests/fake-path/` のスタブで pm コマンドを差し替える。
 ホストに 1 つしかない pm でも、apt / dnf / zypper / yum の経路まで通せる
