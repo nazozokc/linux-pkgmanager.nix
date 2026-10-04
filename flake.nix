@@ -112,10 +112,23 @@
       flakeModules = {
         # flake-parts の消費側
         default = flakeModule;
+        nlp = flakeModule;
 
         # home-manager の消費側。home-manager 本体の出力名に揃える。
         # apps は出さず、home.packages に nlp を載せるだけ
         home-manager = homeManagerModule;
+        homeManager = homeManagerModule;
+        home-manager-nlp = homeManagerModule;
+      };
+
+      nixosModules = {
+        default = homeManagerModule; # NixOS で home-manager module として使うケースは通常home-manager経由だが互換のため維持
+        nlp = homeManagerModule;
+      };
+
+      homeManagerModules = {
+        default = homeManagerModule;
+        nlp = homeManagerModule;
       };
 
       # CI 用の matrix。.github/workflows/ci.yaml が nix eval で読むだけ
@@ -136,6 +149,16 @@
           "x86_64-linux" = "ubuntu-24.04";
         };
       };
-    }
-    // parts;
+
+      templates = {
+        default = {
+          path = ./templates/minimal;
+          description = "Minimal example using linux-pkgmanager.nix with flake-parts or direct module";
+        };
+        minimal = {
+          path = ./templates/minimal;
+          description = "Minimal setup (autoDetect + packages)";
+        };
+      };
+    } // parts;
 }

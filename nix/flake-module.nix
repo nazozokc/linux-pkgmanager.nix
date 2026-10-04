@@ -21,6 +21,7 @@ let
   backends = import ./lib/backends.nix;
   inherit (import ./lib/declared.nix { inherit lib backends; }) validate;
   mkNlp = import ./lib/mk-nlp.nix { inherit lib backends validate; };
+  normalize = import ./lib/normalize.nix { inherit lib backends; };
 
   commandNames = [
     "diff"
@@ -41,9 +42,54 @@ in
       '';
     };
 
+    # High-level
+    autoDetect = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "実行環境で利用可能なパッケージマネージャーを自動検出して有効化";
+    };
+
+    commonPackages = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      description = "全ての有効マネージャーに共通して追加するパッケージ一覧";
+    };
+
+    packages = lib.mkOption {
+      type = lib.types.attrsOf (lib.types.either (lib.types.listOf lib.types.str) lib.types.path);
+      default = { };
+      description = "マネージャー別パッケージ一覧 (トップレベルで集約)";
+    };
+
+    managers = lib.mkOption {
+      type = lib.types.attrsOf (lib.types.submodule {
+        options.enable = lib.mkEnableOption "このマネージャーを有効化する";
+      });
+      default = { };
+      description = "有効マネージャーを明示的に指定する";
+    };
+
+    update = lib.mkOption {
+      type = lib.types.submodule {
+        options = {
+          enable = lib.mkEnableOption "更新機能を有効にする";
+          onActivation = lib.mkOption {
+            type = lib.types.bool;
+            default = false;
+            description = "activation 時の自動更新（安全側でデフォルトfalse）";
+          };
+          flags = lib.mkOption {
+            type = lib.types.attrsOf (lib.types.listOf lib.types.str);
+            default = { };
+          };
+        };
+      };
+      default = { };
+    };
+
+    # Low-level
     declared = lib.mkOption {
       # リストでもファイルでも書ける。ファイルは評価時に import される
-      # (nix/lib/declared.nix の resolve)
       type = lib.types.attrsOf (lib.types.either (lib.types.listOf lib.types.str) lib.types.path);
       default = { };
       example = {
@@ -51,14 +97,10 @@ in
           "man-db"
           "bash-completion"
         ];
-        # 1 pm = 1 ファイルに分けるときは、パスをそのまま書ける
         apt = ./packages/apt.nix;
       };
       description = ''
-        パッケージマネージャー名からパッケージ名リストへの宣言。
-        リストでもファイルでも書ける。ファイルは評価時に import され、
-        中身がリストでなければ評価時に落ちる。
-
+        パッケージマネージャー名からパッケージ名リストへの宣言（Low-level）。
         書いた pm だけを使う。書かなかった pm は空リストとして扱う。
         未知の pm 名と、pm が受理できないパッケージ名は評価時に落ちる。
       '';
@@ -72,7 +114,6 @@ in
         生成する app 名の接頭辞。
         既定の `nlp-` は、消費側がもともと持っている `apps.diff` を潰さないため。
         空文字にすると `diff` / `apply` / `update` / `status` になる。
-        いつ実行するかはここでは決めない。消費側が apps を自分の名前に載せる。
       '';
     };
 
@@ -90,11 +131,20 @@ in
   config.perSystem =
     { pkgs, ... }:
     let
+      normalize = import ./lib/normalize.nix { inherit lib backends; };
+      declaredNormalized =
+        if config.nlp.declared != { } then
+          config.nlp.declared
+        else
+          normalize.normalizeDeclared {
+            enable = true;
+            inherit (config.nlp) autoDetect commonPackages packages managers;
+          };
       built = import ./lib/apps.nix {
         inherit lib pkgs;
         nlp = mkNlp {
           inherit pkgs;
-          inherit (config.nlp) declared;
+          declared = declaredNormalized;
         };
         inherit (config.nlp) appPrefix defaultApp;
       };

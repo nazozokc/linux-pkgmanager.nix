@@ -1,3 +1,55 @@
+## Quick Start（最小導入）
+
+### flake-parts を使う場合
+
+```nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    flake-parts.url = "github:hercules-ci/flake-parts";
+    linux-pkgmanager.url = "github:nazozokc/linux-pkgmanager.nix";
+  };
+
+  outputs = inputs@{ flake-parts, linux-pkgmanager, ... }:
+    flake-parts.lib.mkFlake { inherit inputs; } {
+      systems = [ "x86_64-linux" "aarch64-linux" ];
+      imports = [ linux-pkgmanager.flakeModules.default ];
+
+      nlp = {
+        enable = true;
+        autoDetect = true;
+        packages = {
+          apt    = [ "bat" "eza" "curl" ];
+          pacman = [ "bat" "eza" "curl" ];
+          dnf    = [ "bat" "eza" "curl" ];
+        };
+      };
+    };
+}
+```
+
+### Home Manager 単体で使う場合
+
+```nix
+{ inputs, ... }: {
+  imports = [ inputs.linux-pkgmanager.homeManagerModules.default ];
+  programs.nlp = {
+    enable = true;
+    autoDetect = true;
+    commonPackages = [ "curl" "git" "jq" ];
+    packages = {
+      apt    = [ "bat" "eza" ];
+      pacman = [ "bat" "eza" ];
+      dnf    = [ "bat" "eza" ];
+    };
+  };
+}
+```
+
+`nix flake init -t github:nazozokc/linux-pkgmanager.nix#minimal` でも同じ最小構成を得られます。
+
+---
+
 # linux-pkgmanager.nix
 
 Nix を宣言の入口として、**ネイティブの**パッケージマネージャー経由で
