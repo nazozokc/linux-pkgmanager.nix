@@ -1,5 +1,6 @@
 # nix/flake-parts/checks.nix
-# 壊れないための仕組み。4 つの層で守る。
+# 壊れないための仕組み。eval / shellcheck / fake-path / consumer / treefmt /
+# actionlint の 6 層で守る (treefmt は treefmt.nix が出す)。
 #
 #   checks.eval         宣言の検証 (nix/lib/declared.nix) を評価時に試す。
 #                       評価時に落とす設計が本当に落ちるかを固定する
@@ -52,6 +53,48 @@ in
           ;
       };
 
+      # update.flags と update.enable を焼き込んだ実行体。
+      # 同じハーネスから NLP_UPDATE_FLAGS / NLP_UPDATE_OFF で呼び分ける
+      nlpUpdateFlags = import ../lib/nlp.nix {
+        inherit
+          backends
+          declared
+          lib
+          pkgs
+          ;
+        update = {
+          enable = true;
+          flags = {
+            pacman = [
+              "--refresh"
+              "-v"
+            ];
+          };
+        };
+      };
+
+      nlpUpdateOff = import ../lib/nlp.nix {
+        inherit
+          backends
+          declared
+          lib
+          pkgs
+          ;
+        update.enable = false;
+      };
+
+      # tryEval は Nix 2.35 で throw の文言を読めないので、
+      # 「落ちたかどうか」だけを固定する (文言は option の description に書く)
+      normalizeUpdate = import ../lib/update.nix { inherit lib backends; };
+      updateRejects =
+        name: opts:
+        assertion name (!(builtins.tryEval (normalizeUpdate opts)).success) "この update 設定は評価時に落ちるはずです";
+
+      updateFlagsOk =
+        (builtins.tryEval (normalizeUpdate {
+          flags.pacman = [ "--refresh" ];
+        })).success;
+
       # 宣言の検証 (nix/lib/declared.nix) を意図的に飛ばして作った nlp。
       #
       # 宣言が「1 枚目の防御 (評価時に落とす)」を通り過ぎた場合でも、
@@ -92,6 +135,8 @@ in
           subject,
           nlp,
           hostileNlp,
+          nlpFlags,
+          nlpOff,
         }:
         pkgs.runCommand name
           {
@@ -122,6 +167,8 @@ in
               PATH="${pkgs.coreutils}/bin:${pkgs.gnugrep}/bin:$PATH" \
                 NLP=${nlp}/bin/nlp \
                 NLP_HOSTILE=${hostileNlp}/bin/nlp \
+                NLP_UPDATE_FLAGS=${nlpFlags}/bin/nlp \
+                NLP_UPDATE_OFF=${nlpOff}/bin/nlp \
                 ./run
 
               touch $out
@@ -131,6 +178,8 @@ in
         name = "fake-path-harness";
         subject = "nlp (nix/lib/nlp.nix を直接)";
         inherit nlp hostileNlp;
+        nlpFlags = nlpUpdateFlags;
+        nlpOff = nlpUpdateOff;
       };
 
       # ------------------------------------------------------------------------
@@ -161,6 +210,11 @@ in
           );
 
       apps = consumerFlake.apps.${system} or { };
+      appsNoUpdate =
+        (import ../lib/apps.nix {
+          inherit lib pkgs nlp;
+          update = false;
+        }).apps;
       consumerPackages = consumerFlake.packages.${system} or { };
 
       # home-manager 版は選択肢が 1 つ (home.packages に載せる) だけなので、
@@ -197,6 +251,16 @@ in
 
       homeOff = evalHome { programs.nlp.declared.pacman = ../../packages/pacman.nix; };
 
+      # dotfiles 向けの flat API も公開モジュール経由で評価する
+      homeFlat = evalHome {
+        programs.nlp = {
+          enable = true;
+          packages = [ "curl" ];
+          packagesByPm.apt = [ "bat" ];
+        };
+      };
+      homeFlatPackages = homeFlat.home.packages or [ ];
+
       # home.packages に入るのは「nlp 1 つ」だけなので、
       # enable = true は 1 件 / false は 0 件で比べる
       homeOnPackages = homeOn.home.packages or [ ];
@@ -229,7 +293,7 @@ in
       };
 
       assertions = [
-        (assertion "app 名が 4 コマンド + default に揃う" (
+        (assertion "app 名が 5 コマンド + default に揃う" (
           appNames == expectedApps
         ) "期待: ${lib.concatStringsSep " " expectedApps} / 実際: ${lib.concatStringsSep " " appNames}")
         (assertion "各 app に program と description がある" (lib.all (
@@ -251,6 +315,24 @@ in
         (assertion "enable = false では home.packages に入らない" (
           homeOffPackages == [ ]
         ) "実際: ${builtins.toString (builtins.length homeOffPackages)} 個")
+        (assertion "home-manager の autoDetect は既定 true" (
+          homeFlat.programs.nlp.autoDetect == true
+        ) "実際: ${builtins.toString homeFlat.programs.nlp.autoDetect}")
+        (assertion "flat な packages でも home.packages に nlp が載る" (
+          builtins.length homeFlatPackages == 1 && (lib.head homeFlatPackages).name == "nlp"
+        ) "実際: ${builtins.toString (builtins.length homeFlatPackages)} 個")
+        (assertion "update.enable = false では update app を出さない" (
+          !(builtins.elem "update" (builtins.attrNames appsNoUpdate))
+          && builtins.elem "diff" (builtins.attrNames appsNoUpdate)
+        ) "実際: ${lib.concatStringsSep " " (builtins.attrNames appsNoUpdate)}")
+        (updateRejects "update.onActivation = true は却下" { onActivation = true; })
+        (updateRejects "update.flags の未知 pm は却下" {
+          flags.apk = [ "--refresh" ];
+        })
+        (updateRejects "update.flags の改行は却下" {
+          flags.pacman = [ "a\nb" ];
+        })
+        (assertion "正しい update.flags は受理" updateFlagsOk "受理されるはずの設定が落ちました")
       ];
 
       consumerReport = lib.concatMapStringsSep "\n" (
@@ -317,11 +399,32 @@ in
               pkgs.shellcheck
               pkgs.coreutils
             ];
+            LC_ALL = "C.UTF-8";
           }
           ''
             cd ${../lib/script}
-            shellcheck --severity=style *.sh
-            echo "  shellcheck: $(ls *.sh | wc -l) ファイル" >&2
+            # shellcheck の --shell は「その後ろのファイル」に効くので、
+            # 拡張子の無いハーネスは shell 指定を分けて呼ぶ。
+            shellcheck --severity=style --shell=bash *.sh
+            shellcheck --severity=style --shell=bash ${../../tests/fake-path}/run
+            shellcheck --severity=style --shell=sh ${../../tests/fake-path}/stub
+            echo "  shellcheck: $(ls *.sh | wc -l) + 2 ハーネスファイル" >&2
+            echo ok > "$out"
+          '';
+
+      # CI の workflow は nix flake check では評価されないので別途 lint する。
+      # matrix は flake の checks から生成されるため、workflow の式の壊れは
+      # GitHub 上でしか見つからない (この check で潰す)
+      actionlint =
+        pkgs.runCommand "workflow-actionlint"
+          {
+            nativeBuildInputs = [
+              pkgs.actionlint
+              pkgs.coreutils
+            ];
+          }
+          ''
+            actionlint -shellcheck=${pkgs.shellcheck}/bin/shellcheck ${../../.github/workflows/ci.yaml}
             echo ok > "$out"
           '';
 
@@ -329,7 +432,8 @@ in
       evalCheck =
         let
           cases = import ../../tests/eval/cases.nix {
-            inherit check lib;
+            inherit backends check lib;
+            normalize = import ../lib/normalize.nix { inherit lib backends; };
           };
         in
         pkgs.runCommand "declared-eval-check"
@@ -351,6 +455,7 @@ in
     in
     {
       checks = {
+        inherit actionlint;
         consumer = consumerCheck;
         eval = evalCheck;
         fake-path = fakePathHarness;

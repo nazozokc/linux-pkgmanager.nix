@@ -4,7 +4,8 @@
 #   imports = [ inputs.linux-pkgmanager.nix.flakeModules.home-manager ];
 #   programs.nlp = {
 #     enable = true;
-#     declared.pacman = ./packages/pacman.nix;
+#     packages = [ "bat" "eza" ];              # 全 pm に共通 (autoDetect 既定 true)
+#     packagesByPm.pacman = [ "man-db" ];      # pm 固有
 #   };
 #
 # やるのは「宣言を焼き込んだ nlp を home.packages に載せる」だけ。
@@ -30,6 +31,7 @@ let
 
   mkNlp = import ./lib/mk-nlp.nix { inherit lib backends validate; };
   normalize = import ./lib/normalize.nix { inherit lib backends; };
+  normalizeUpdate = import ./lib/update.nix { inherit lib backends; };
 
   # 正規化された宣言（High-level + Low-level をマージ）
   declaredNormalized =
@@ -38,14 +40,24 @@ let
     else
       normalize.normalizeDeclared {
         enable = true;
-        inherit (cfg) autoDetect commonPackages packages managers;
+        inherit (cfg)
+          autoDetect
+          commonPackages
+          packages
+          packagesByPm
+          managers
+          ;
       };
+
+  # 更新設定の検証。onActivation = true はここで評価時に落とす
+  updateCfg = normalizeUpdate cfg.update;
 
   # 宣言を焼き込んだ実行体。enable = false のときはこの thunk は触られない
   # (config 側が mkIf で包んでいるため)
   package = mkNlp {
     inherit pkgs;
     declared = declaredNormalized;
+    update = updateCfg;
   };
 in
 {
@@ -55,29 +67,39 @@ in
     # High-level convenience options
     autoDetect = lib.mkOption {
       type = lib.types.bool;
-      default = false;
+      default = true;
       description = ''
-        true の場合、実行環境で利用可能なパッケージマネージャーを自動検出して有効化する。
-        検出されたマネージャーの packages.<pm> + commonPackages が適用される。
+        全 pm 分の宣言を作る (既定 true)。
+        評価時にホストの pm は分からない (pure 評価を壊さないため) ので、
+        実際にどの pm を使うかは実行時の PATH 検出が決める。
+        特定の pm だけを対象にしたいときは false にして packagesByPm を書く。
       '';
+    };
+
+    packages = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      description = "全 pm に共通して入れたいパッケージ名のリスト (dotfiles の主入力)";
+    };
+
+    packagesByPm = lib.mkOption {
+      type = lib.types.attrsOf (lib.types.either (lib.types.listOf lib.types.str) lib.types.path);
+      default = { };
+      description = "pm 固有のパッケージ一覧。値はリストでもファイルでも書ける";
     };
 
     commonPackages = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
-      description = "全ての有効マネージャーに共通して追加するパッケージ一覧";
-    };
-
-    packages = lib.mkOption {
-      type = lib.types.attrsOf (lib.types.either (lib.types.listOf lib.types.str) lib.types.path);
-      default = { };
-      description = "マネージャー別パッケージ一覧 (トップレベルで集約)";
+      description = "packages の互換用別名。新しい設定では packages を使う";
     };
 
     managers = lib.mkOption {
-      type = lib.types.attrsOf (lib.types.submodule {
-        options.enable = lib.mkEnableOption "このマネージャーを有効化する";
-      });
+      type = lib.types.attrsOf (
+        lib.types.submodule {
+          options.enable = lib.mkEnableOption "このマネージャーを有効化する";
+        }
+      );
       default = { };
       description = "有効マネージャーを明示的に指定する (Low-level)";
     };
@@ -85,21 +107,34 @@ in
     update = lib.mkOption {
       type = lib.types.submodule {
         options = {
-          enable = lib.mkEnableOption "更新機能 (nlp-update) を有効にする";
+          enable = lib.mkOption {
+            type = lib.types.bool;
+            default = true;
+            description = ''
+              false にすると実行体の update が拒否される。
+              home-manager は apps を出さないので、ここでは nlp 本体に焼き込む。
+            '';
+          };
           onActivation = lib.mkOption {
             type = lib.types.bool;
             default = false;
-            description = "home-manager switch 時に自動更新しない（安全側）";
+            description = ''
+              非対応。true にすると評価時に落ちる。
+              activation に sudo を挟むと非対話の switch と CI が詰まるため、
+              switch のあとに nlp update を手動で実行する。
+            '';
           };
           flags = lib.mkOption {
             type = lib.types.attrsOf (lib.types.listOf lib.types.str);
             default = { };
-            description = "マネージャー別の追加フラグ";
+            description = ''
+              pm ごとの更新コマンドへ末尾に足す引数。1 要素 = 1 引数。
+            '';
           };
         };
       };
       default = { };
-      description = "更新に関する宣言的設定";
+      description = "更新コマンドの設定 (nlp update)";
     };
 
     # Low-level: explicit declared

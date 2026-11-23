@@ -12,7 +12,12 @@
 #   Nix 2.35 の builtins.tryEval は throw のメッセージを読めない。
 #   r.value を触ると同じ例外が再送出されるので、
 #   「落ちた」ことしか分からない。problems なら文言までそのまま取れる
-{ lib, check }:
+{
+  lib,
+  check,
+  normalize,
+  backends,
+}:
 
 let
   # 1 つの宣言を試す。検査は純粋関数なのでその場で呼べる
@@ -87,6 +92,25 @@ let
       inherit name;
       ok = picked == expected;
       detail = "期待: ${show expected} / 実際: ${show picked}";
+    };
+
+  # 高位オプションの正規化も、受理かどうかだけでなく「どの宣言になったか」を見る。
+  # 期待値は全 pm を空リストで埋めてから上書きする (normalize は有効 pm だけを返す)
+  normalizeCases =
+    c:
+    let
+      name = builtins.elemAt c 0;
+      opts = builtins.elemAt c 1;
+      expected = builtins.elemAt c 2;
+      got = normalize.normalizeDeclared opts;
+
+      render = v: if builtins.isList v then lib.concatStringsSep " " (map toString v) else toString v;
+      show = a: lib.concatStringsSep " " (lib.mapAttrsToList (pm: v: "${pm}=[${render v}]") a);
+    in
+    {
+      inherit name;
+      ok = got == expected;
+      detail = "期待: ${show expected} / 実際: ${show got}";
     };
 
   all =
@@ -264,6 +288,75 @@ let
         "ファイルの重複も 1 個に落ちる"
         { pacman = ./fixtures/list-dup.nix; }
         { pacman = [ "man-db" ]; }
+      ]
+    ]
+    ++ map normalizeCases [
+      [
+        "autoDetect は既定で全 pm の宣言を作る"
+        { }
+        (lib.genAttrs (lib.attrNames backends) (_: [ ]))
+      ]
+      [
+        "packages は全 pm に commonPackages と同じように足る"
+        {
+          packages = [ "curl" ];
+          packagesByPm.pacman = [ "git" ];
+        }
+        (
+          lib.genAttrs (lib.attrNames backends) (_: [ "curl" ])
+          // {
+            pacman = [
+              "git"
+              "curl"
+            ];
+          }
+        )
+      ]
+      [
+        "autoDetect を切ると packages / packagesByPm / managers の和集合になる"
+        {
+          autoDetect = false;
+          packages = [ "curl" ];
+          packagesByPm.apt = [ "bat" ];
+          managers.dnf.enable = true;
+        }
+        {
+          apt = [
+            "bat"
+            "curl"
+          ];
+          dnf = [ "curl" ];
+        }
+      ]
+      [
+        "ファイル宣言には packages を足さない"
+        {
+          autoDetect = false;
+          packages = [ "curl" ];
+          packagesByPm.pacman = ./fixtures/list-ok.nix;
+        }
+        {
+          pacman = ./fixtures/list-ok.nix;
+        }
+      ]
+      [
+        "commonPackages は packages の互換別名として効く"
+        {
+          autoDetect = false;
+          commonPackages = [ "curl" ];
+          packagesByPm.apt = [ "bat" ];
+        }
+        {
+          apt = [
+            "bat"
+            "curl"
+          ];
+        }
+      ]
+      [
+        "enable = false なら何も宣言しない"
+        { enable = false; }
+        { }
       ]
     ];
 

@@ -225,15 +225,27 @@ do_apply() { # <pm>
 # update は 1 コマンドずつ sudo を付ける。
 # `&&` で 1 本に繋いで sudo を前置すると、2 本目以降が root でないまま走る
 do_update() { # <pm>
-  local pm="$1" line
-  local -a argv=()
+  local pm="$1" line flag
+  local -a argv=() flags=()
+
+  if [ "${UPDATE_ENABLED:-true}" != "true" ]; then
+    die "$pm の update は nlp.update.enable = false で無効にされています" 2
+  fi
 
   sudo_prelude
+
+  # フラグは 1 行 = 1 引数。空白を含むフラグも 1 引数のまま足す
+  while IFS= read -r flag; do
+    [ -n "$flag" ] && flags+=("$flag")
+  done <<<"${PM_UPDATE_FLAGS[$pm]}"
 
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     read -ra argv <<<"$line"
     [ "${#argv[@]}" -gt 0 ] || continue
+    for flag in "${flags[@]}"; do
+      argv+=("$flag")
+    done
     printf '  %supdate%s  ' "$C_B" "$C_0"
     print_cmd "${argv[@]}"
     run_root "${argv[@]}"
@@ -247,7 +259,7 @@ do_update() { # <pm>
 #
 # binary 列は `pacman@/usr/bin/pacman` のようにパスが入るため、
 # 列幅は表示前に実測して決める
-do_status() { # <pm>
+do_status() {
   local pm binary declared_count lock_state col w=8 i=0
   local -a binaries=() founds=()
 
