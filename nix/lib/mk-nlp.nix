@@ -28,8 +28,19 @@
   backends,
   validate,
 }:
-{ pkgs, declared }:
+{
+  pkgs,
+  declared,
+  update ? {
+    enable = true;
+    flags = { };
+  },
+}:
+let
+  normalizeUpdate = import ./update.nix { inherit lib backends; };
+in
 import ./nlp.nix {
   inherit lib backends pkgs;
   declared = validate declared;
+  update = normalizeUpdate update;
 }

@@ -126,11 +126,6 @@
         nlp = homeManagerModule;
       };
 
-      homeManagerModules = {
-        default = homeManagerModule;
-        nlp = homeManagerModule;
-      };
-
       # CI 用の matrix。.github/workflows/ci.yaml が nix eval で読むだけ
       #
       # attrPrefix を "checks" にするのは、既定値が "githubActions.checks" で
@@ -160,5 +155,6 @@
           description = "Minimal setup (autoDetect + packages)";
         };
       };
-    } // parts;
+    }
+    // parts;
 }

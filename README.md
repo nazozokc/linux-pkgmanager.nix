@@ -32,8 +32,9 @@
 }
 ```
 
-`packages` に書いた pm だけが対象になる。`./packages/apt.nix` のようなファイルを
-渡してもよい（[宣言の書き方](#宣言の書き方)）。
+`packages` に書いた pm が対象になる。`autoDetect = true` を足すと、5 pm すべてに
+`commonPackages` を配った宣言を作る（実際にどの pm を使うかは実行時の PATH で決まる）。
+`./packages/apt.nix` のようなファイルを渡してもよい（[宣言の書き方](#宣言の書き方)）。
 
 ```console
 $ nix run .#nlp-diff     # 不足分を見る (副作用なし)
@@ -110,7 +111,7 @@ $ nix run .#diff         # 宣言と導入済みを比較 (副作用なし)
 $ nix run .#adopt        # 明示導入済みを宣言の雛形として出す (副作用なし)
 $ nix run .#apply        # 不足分だけ導入する
 $ nix run .#update       # pm を更新してから不足分を補う
-$ nix run .#status       # 検出した pm と宣言の件数
+$ nix run .#status       # 全 pm の検出結果と宣言件数 (pm 未検出でも動く)
 ```
 
 `diff` と `status` は pm を一切変更しない。`apply` / `update` だけが
@@ -255,17 +256,16 @@ nlp = {
 
 解決の順序（`nix/lib/normalize.nix`）:
 
-| 段階              | 内容                                                                    |
-| ----------------- | ----------------------------------------------------------------------- |
-| 1. どちらを使う   | `declared` が空でなければ `declared` だけを使う。高位はすべて無視する   |
-| 2. 有効な pm      | `packages` に pm 名がある ∪ `managers.<pm>.enable = true` ∪ 検出した pm |
-| 3. 宣言を組み立て | `packages.<pm> ++ commonPackages`。重複は 1 個に畳む                    |
+| 段階              | 内容                                                                                      |
+| ----------------- | ----------------------------------------------------------------------------------------- |
+| 1. どちらを使う   | `declared` が空でなければ `declared` だけを使う。高位はすべて無視する                     |
+| 2. 有効な pm      | `packages` に pm 名がある ∪ `managers.<pm>.enable = true` ∪ `autoDetect = true` なら全 pm |
+| 3. 宣言を組み立て | `packages.<pm> ++ commonPackages`。重複は 1 個に畳む                                      |
 
 現行の実装そのままの注意:
 
-- `autoDetect = true` は `backends.<pm>.detect` を要求するが、`backends.nix` に
-  `detect` フィールドがまだ無いので **1 pm も有効にならない**。pm を列挙したい
-  ときは `packages` か `managers` を使う
+- `autoDetect = true` は pure eval でホストを判定できないので、**全 pm 分の宣言**
+  を作る。実際に使う pm は実行時に PATH を見て決まる（`status` は全 pm を一覧する）
 - `commonPackages` は「有効な pm」の宣言にだけ足される。有効な pm が 1 つも無い
   と足す先が無いので、何もしない
 - `packages.<pm>` にファイル（パス）を書くと、そのパスがそのまま宣言になる。
@@ -273,9 +273,26 @@ nlp = {
 - `managers.<pm>.enable = false` は pm を宣言から外す指定ではない。
   `packages.<pm>` を書いている pm は有効なまま残る。宣言から外すのは
   `packages` から消すこと
-- `update` サブモジュール（`enable` / `onActivation` / `flags`）は宣言だけで、
-  まだ実行体に配線していない。`nlp update` は手動で叩く
+- `nlp.update` は `enable` / `flags` / `onActivation` を持つ（後述）
 - どちらの層でも宣言検査（[書けない名前](#書けない名前)）は同じものを通る
+
+### update オプション
+
+`nlp.update`（home-manager 側は `programs.nlp.update`）は `nlp update` の挙動を決める。
+
+```nix
+nlp.update = {
+  enable = true;      # 既定 true。false にすると update app も実行も出さない
+  onActivation = false; # 既定 false。true は非対応で評価時に落ちる
+  flags.pacman = [ "--refresh" "-v" ]; # pm 更新コマンドの末尾に 1 引数ずつ足す
+};
+```
+
+- `flags` は pm 名 → 文字列リスト。1 要素が 1 引数で、空文字と改行は使えない
+- 未知の pm 名を書くと評価時に落ちる
+- `onActivation = true` はサポートしない。`switch` に `sudo` を挟むと
+  非対話環境と CI が詰まるため、更新は `switch` のあとに手動で叩く
+- `defaultApp = "update"` と `update.enable = false` は同時に指定できない
 
 ### パッケージ名
 
@@ -407,7 +424,7 @@ $ nix run .#nlp-diff     # 宣言と導入済みを比較 (副作用なし)
 $ nix run .#nlp-adopt    # 明示導入済みを宣言の雛形として出す (副作用なし)
 $ nix run .#nlp-apply    # 不足分だけ導入する
 $ nix run .#nlp-update   # pm を更新してから不足分を補う
-$ nix run .#nlp-status   # 検出した pm と宣言の件数
+$ nix run .#nlp-status   # 全 pm の検出結果と宣言件数 (pm 未検出でも動く)
 ```
 
 `nlp-` は消費側がもともと持っている `apps.diff` を潰さないための接頭辞。
@@ -459,11 +476,6 @@ $ nlp apply             # 不足分だけ導入する (switch のあと手動)
 
 `flakeModules.default` と `flakeModules.home-manager` はどちらも `imports` に置く
 ものだが、同じ config に 2 つ入れてはならない。どちらか 1 つを選ぶ。
-
-`homeManagerModules.default` も同じモジュールを返す。ただし Nix は
-`homeManagerModules` を既知の flake output 名として知らないので、
-`nix flake check` が `warning: unknown flake output 'homeManagerModules'` を出す。
-警告を出したくないなら `flakeModules.home-manager` を使う。
 
 ### flake-parts を使わない場合
 
@@ -520,7 +532,6 @@ Boolean, or integer is expected
 | `flakeModules.home-manager`                 | home-manager モジュール。`programs.nlp` の宣言から `home.packages` へ nlp を出します       |
 | `flakeModules.homeManager`                  | `flakeModules.home-manager` と同じファイル                                                 |
 | `flakeModules.home-manager-nlp`             | `flakeModules.home-manager` と同じファイル                                                 |
-| `homeManagerModules.default` / `.nlp`       | home-manager 用モジュールの別名。`nix flake check` が unknown flake output と警告します    |
 | `templates.default` / `templates.minimal`   | `nix flake init -t github:nazozokc/linux-pkgmanager.nix#minimal` の元になる最小構成        |
 | `lib.mkApps`                                | 宣言から `{ package, apps }` を返す関数                                                    |
 | `lib.mkNlp`                                 | 宣言を受け取って nlp の derivation を返す関数                                              |
@@ -530,12 +541,12 @@ Boolean, or integer is expected
 | `lib.check`                                 | 検査だけする。問題を文字列のリストで返す                                                   |
 | `packages.<system>.nlp`                     | その flake の宣言で組んだ nlp                                                              |
 | `apps.<system>.*`                           | `diff` / `adopt` / `apply` / `update` / `status`（`defaultApp` を設定すれば `default` も） |
-| `checks.<system>.*`                         | `eval` / `shellcheck` / `fake-path` / `consumer` / `treefmt`                               |
+| `checks.<system>.*`                         | `eval` / `shellcheck` / `actionlint` / `fake-path` / `consumer` / `treefmt`                |
 | `githubActions.matrix`                      | CI 専用。`nix flake check` が unknown flake output と警告します                            |
 
-`nixosModules` には出してない。Nix の flake schema は `nixosModules.<system>.<name>`
-を期待するので、このリポジトリの `{ default; nlp; }` という形は解釈されず捨てられる。
-NixOS で使う場合も home-manager 経由なので、`flakeModules.home-manager` を使う。
+`nixosModules.default` / `nixosModules.nlp` は互換のために残しているが、中身は
+home-manager モジュールと同じ。NixOS で使う場合も home-manager 経由で
+`flakeModules.home-manager` を import する。
 
 このリポジトリ自身の `apps` は接頭辞なし（`nix run .#diff`）。
 消費側のモジュールは既定で `nlp-diff` のように接頭辞を付ける。
@@ -557,12 +568,13 @@ $ nix flake check --all-systems   # 5 pm すべての経路を検証
 $ nix fmt                          # nixfmt / shfmt / statix / deadnix / prettier
 ```
 
-5 層で守る。
+6 層で守る。
 
 | check               | 何を見る                                                                   |
 | ------------------- | -------------------------------------------------------------------------- |
-| `checks.eval`       | 宣言の検査が実際に落ちるかを、受理・却下ケースで固定する                   |
-| `checks.shellcheck` | 連結前の `nix/lib/script/*.sh` を lint する                                |
+| `checks.eval`       | 宣言と `autoDetect` / `update` の正規化が実際に落ちるかを受理・却下で固定  |
+| `checks.shellcheck` | 連結前の `nix/lib/script/*.sh` と fake-path ハーネスを lint する           |
+| `checks.actionlint` | `.github/workflows/ci.yaml` を actionlint で検証する                       |
 | `checks.fake-path`  | 5 pm すべてのコマンド生成と差分計算を、PATH 差し替えで実測する             |
 | `checks.consumer`   | 公開 API を入力に載せた消費側 flake を実際に評価して、出た apps を起動する |
 | `checks.treefmt`    | `nix fmt` の整形チェック（treefmt-nix が出す）                             |
@@ -603,7 +615,7 @@ $ nix eval --json .#githubActions.matrix.include | jq '.[0]'
 - `nix-github-actions` の `mkGithubMatrix` が check 名と runner を pairing する
 - `attrPrefix = "checks"` なので `checks.<system>.<name>` をそのまま使う
 - 対象は `x86_64-linux` と `aarch64-linux`
-- `treefmt` も含め、matrix は check × system の組で埋まる（5 × 2 = 10）
+- `actionlint` と `treefmt` も含め、matrix は check × system の組で埋まる（6 × 2 = 12）
 
 `attr` には `-` を含む名前が引用符つきで入る（`fake-path` → `"fake-path"`）。
 workflow では env 経由で渡して、shell の引用規則に依存させないようにしている。

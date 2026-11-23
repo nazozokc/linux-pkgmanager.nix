@@ -15,6 +15,7 @@
   nlp,
   appPrefix ? "",
   defaultApp ? null,
+  update ? true,
 }:
 let
   commands = {
@@ -42,7 +43,9 @@ let
       program = "${wrapper}/bin/nlp-${subcommand}";
     };
 
-  named = lib.mapAttrs mkApp commands;
+  # update.enable = false のときは更新の app 自体を出さない。
+  # 実行体側も UPDATE_ENABLED で拒否するので、両方で同じ設定が効く
+  named = lib.mapAttrs mkApp (lib.filterAttrs (name: _: update || name != "update") commands);
 
   apps = lib.mapAttrs' (name: app: lib.nameValuePair "${appPrefix}${name}" app) named;
 in
@@ -51,6 +54,10 @@ in
   apps =
     apps
     // lib.optionalAttrs (defaultApp != null) {
-      default = apps."${appPrefix}${defaultApp}";
+      default =
+        if defaultApp == "update" && !update then
+          throw "nlp.defaultApp = \"update\" は nlp.update.enable = false と同時に指定できません"
+        else
+          apps."${appPrefix}${defaultApp}";
     };
 }

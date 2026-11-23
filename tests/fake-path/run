@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# テスト文字列として $() をそのまま扱う箇所が多数あるため、SC2016 だけ黙らせる
+# shellcheck disable=SC2016
 # tests/fake-path/run — 5 pm すべてのコマンド生成と差分計算を検証する
 #
 # ホストが Arch でも apt / dnf / zypper / yum の経路を検証できる唯一の手段。
@@ -20,6 +22,8 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 stub="$here/stub"
 nlp="${NLP:-}"
 hostile="${NLP_HOSTILE:-}"
+nlpUpdateFlags="${NLP_UPDATE_FLAGS:-}"
+nlpUpdateOff="${NLP_UPDATE_OFF:-}"
 
 fail=0
 total=0
@@ -572,6 +576,52 @@ if printf '%s' "$out" | grep -qE 'apt +\(not found\)'; then
   ok 'status は未導入の pm も一覧する'
 else
   ng 'status の未検出 pm' "実際: $out"
+fi
+
+# pm が 1 つも無いホストでも status は成立する (全 pm を not found と出す)
+run "$empty" status
+if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -qE 'pacman +\(not found\)' \
+  && printf '%s' "$out" | grep -qE 'apt +\(not found\)'; then
+  ok 'pm 未検出でも status は全 pm を報告する'
+else
+  ng 'pm 未検出の status' "期待: rc=0 + 全 pm not found / 実際: rc=$rc $out"
+fi
+
+# ===========================================================================
+section 'update — flags / enable が実行体に焼き込まれる'
+# ===========================================================================
+if [ -n "$nlpUpdateFlags" ] && [ -x "$nlpUpdateFlags" ]; then
+  p="$(make_path "$d/update-flags" pacman)"
+  log="$(mktemp)"
+  out="$(env PATH="$p" STUB_LOG="$log" STUB_STDOUT='' STUB_RC=0 "$nlpUpdateFlags" update 2>&1)"
+  rc=$?
+  calls="$(cat "$log")"
+  rm -f "$log"
+
+  if printf '%s' "$calls" | grep -Fqx 'sudo pacman -Syu --noconfirm --refresh -v'; then
+    ok 'update.flags が更新コマンドの末尾に 1 引数ずつ付く'
+  else
+    ng 'update.flags' "期待: sudo pacman -Syu --noconfirm --refresh -v / 実際: $calls"
+  fi
+else
+  ng 'update.flags の実行体が渡されていない' "NLP_UPDATE_FLAGS=${nlpUpdateFlags:-<未設定>}"
+fi
+
+if [ -n "$nlpUpdateOff" ] && [ -x "$nlpUpdateOff" ]; then
+  p="$(make_path "$d/update-off" pacman)"
+  log="$(mktemp)"
+  out="$(env PATH="$p" STUB_LOG="$log" STUB_STDOUT='' STUB_RC=0 "$nlpUpdateOff" update 2>&1)"
+  rc=$?
+  calls="$(cat "$log")"
+  rm -f "$log"
+
+  if [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -q 'nlp.update.enable = false' && [ -z "$calls" ]; then
+    ok 'update.enable = false は更新コマンドを一切呼ばずに拒否する'
+  else
+    ng 'update.enable = false' "期待: rc=2 + 通知のみ / 実際: rc=$rc out=$out calls=$calls"
+  fi
+else
+  ng 'update.enable = false の実行体が渡されていない' "NLP_UPDATE_OFF=${nlpUpdateOff:-<未設定>}"
 fi
 
 # ===========================================================================

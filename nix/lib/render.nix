@@ -27,6 +27,10 @@
   lib,
   backends,
   declared,
+  update ? {
+    enable = true;
+    flags = { };
+  },
 }:
 
 let
@@ -68,6 +72,7 @@ let
       "PM_MISSING_ERROR[${pm}]=${bashQuote (lib.concatStringsSep "\n" q.error)}"
       "PM_INSTALL[${pm}]=${bashQuote (b.install "@PKGS@")}"
       "PM_UPDATE[${pm}]=${bashQuote (lib.concatStringsSep "\n" b.update)}"
+      "PM_UPDATE_FLAGS[${pm}]=${bashQuote (lib.concatStringsSep "\n" (update.flags.${pm} or [ ]))}"
       "DECLARED[${pm}]=${bashQuote (lib.concatStringsSep "\n" (declaredList pm))}"
     ];
 
@@ -79,6 +84,7 @@ let
 
   # 1 エントリ = 1 backend の代入ブロック。backend 間は空行で区切る
   registry = lib.concatStringsSep "\n" [
+    "UPDATE_ENABLED=${if update.enable then "true" else "false"}"
     "PM_ORDER=(${lib.concatMapStringsSep " " bashQuote pmNames})"
     "PM_NAME_PATTERN=${bashQuote common.pattern}"
     "PM_NAME_HINT=${bashQuote common.hint}"

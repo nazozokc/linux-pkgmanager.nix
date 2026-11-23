@@ -15,6 +15,13 @@
   # 宣言に「単一引用符の中で $ を含む値」がわざと入っているため、
   # SC2016 だけを黙らせる (他の指摘は残す)
   excludeShellChecks ? [ ],
+
+  # nlp.update を正規化した値。enable は更新コマンドの可否、
+  # flags は pm 更新コマンドへ足す追加引数 (pm -> 文字列のリスト)
+  update ? {
+    enable = true;
+    flags = { };
+  },
 }:
 let
   render = import ./render.nix;
@@ -34,5 +41,12 @@ pkgs.writeShellApplication {
 
   # writeShellApplication がシェバングを足し、shellcheck を通してから
   # ビルドする。生成したスクリプトの lint はここで 1 回だけかかる
-  text = render { inherit backends declared lib; };
+  text = render {
+    inherit
+      backends
+      declared
+      lib
+      update
+      ;
+  };
 }

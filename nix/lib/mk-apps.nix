@@ -26,6 +26,7 @@
   declared,
   appPrefix ? "nlp-",
   defaultApp ? null,
+  update ? true,
 }:
 let
   nlp = import ./mk-nlp.nix { inherit lib backends validate; } { inherit pkgs declared; };
@@ -37,5 +38,6 @@ import ./apps.nix {
     nlp
     appPrefix
     defaultApp
+    update
     ;
 }

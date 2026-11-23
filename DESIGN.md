@@ -19,6 +19,8 @@ packages/<pm>.nix       pm ごとの宣言 (素のリスト)
 
 nix/lib/backends.nix    5 pm の純粋データ定義
 nix/lib/declared.nix    宣言の検査 (問題を文字列のリストで返す + throw)
+nix/lib/normalize.nix   高位オプション (packages / managers / autoDetect) を declared へ落とす
+nix/lib/update.nix      nlp.update の検証と正規化
 nix/lib/names.nix       受理する名前の規則 (検査と adopt の両方が使う)
 nix/lib/render.nix      ソース連結 + bash の単一引用符リテラル生成
 nix/lib/nlp.nix         実行体 nlp の定義 (apps / checks が共有)
@@ -39,7 +41,7 @@ nix/lib/script/         実行体の中身。1 ファイル 1 責務
   90-main.sh              引数解釈と入口
 
 nix/flake-parts/
-  checks.nix             eval / shellcheck / fake-path / consumer
+  checks.nix             eval / shellcheck / actionlint / fake-path / consumer
   treefmt.nix
 
 .github/workflows/ci.yaml    matrix を flake から組み立てる CI
@@ -95,6 +97,11 @@ flake の input に置けるのは url / follows / inputs だけなので、宣�
 output と `_module.args` に同じ値を配る。公開しているファイルと
 `checks.consumer` が検査するファイルがずれると、公開 API の検査が意味を失う。
 
+`autoDetect = true` は Nix の純粋評価でホスト pm を決められないので、
+全 pm 分の宣言を作る。実際に使う pm は実行時の PATH で決める。
+`nlp.update.flags.<pm>` は pm 更新コマンドの末尾へ 1 要素 = 1 引数で足す。
+`onActivation = true` は非対話の `switch` と CI を壊すので評価時に拒否する。
+
 home-manager 側は apps を出さない。`sudo` が要る `apply` / `update` を
 activation に載せないためで、非対話の `switch` と CI を壊さないための判断。
 
@@ -110,7 +117,8 @@ activation に載せないためで、非対話の `switch` と CI を壊さな�
 `render.nix` は 2 つの仕事だけをする。
 
 1. `nix/lib/script/*.sh` を順番に連結する
-2. `@@REGISTRY@@` を backend 定義と宣言で埋める
+2. `@@REGISTRY@@` を backend 定義、宣言、`nlp.update` の設定で埋める
+   (`UPDATE_ENABLED` / `PM_UPDATE_FLAGS`)
 
 埋め込みは**必ず bash の単一引用符リテラル**にする。
 
@@ -180,13 +188,13 @@ bash-completion'
 5 pm の差分は「明示導入済み一覧の出し方」「install 引数」「update の意味」
 「不足判定コマンド」「答えの解釈」だけで、照合エンジンは完全に共通。
 
-| pm     | explicit                                  | missing                      | install                                      | update                            |
-| ------ | ----------------------------------------- | ---------------------------- | -------------------------------------------- | --------------------------------- |
-| pacman | `pacman -Qqe`                             | `pacman -T`                  | `pacman -S --needed --noconfirm`             | `pacman -Syu --noconfirm`         |
-| apt    | `apt-mark showmanual`                     | `apt-get install --simulate` | `apt-get install -y --no-install-recommends` | `apt-get update` + `full-upgrade` |
-| dnf    | `dnf list -C --installed --userinstalled` | `dnf list -C --installed`    | `dnf install -y`                             | `dnf upgrade -y`                  |
-| zypper | `rpm -qa --userinstalled`                 | `rpm -q`                     | `zypper --non-interactive install -y`        | `zypper --non-interactive up`     |
-| yum    | `rpm -qa`                                 | `rpm -q`                     | `yum install -y`                             | `yum update -y`                   |
+| pm     | explicit                  | missing                      | install                                      | update                            |
+| ------ | ------------------------- | ---------------------------- | -------------------------------------------- | --------------------------------- |
+| pacman | `pacman -Qqe`             | `pacman -T`                  | `pacman -S --needed --noconfirm`             | `pacman -Syu --noconfirm`         |
+| apt    | `apt-mark showmanual`     | `apt-get install --simulate` | `apt-get install -y --no-install-recommends` | `apt-get update` + `full-upgrade` |
+| dnf    | `rpm -qa --userinstalled` | `dnf list -C --installed`    | `dnf install -y`                             | `dnf upgrade -y`                  |
+| zypper | `rpm -qa --userinstalled` | `rpm -q`                     | `zypper --non-interactive install -y`        | `zypper --non-interactive up`     |
+| yum    | `rpm -qa`                 | `rpm -q`                     | `yum install -y`                             | `yum update -y`                   |
 
 `apt-get install --simulate` は「導入済みなら Already newest、無いなら Installed」
 を出力するので、その行の有無で判定する。`dnf` は `-C` で metadata 更新を避ける。
@@ -222,7 +230,7 @@ yum の明示導入判定に `userinstalled` を使わないのは、RHEL 7 の 
 | `adopt`  | なし   | 明示導入済みを宣言の雛形として標準出力に出す。ファイルは書かない          |
 | `apply`  | あり   | missing を install                                                        |
 | `update` | あり   | pm update を実行し、続けて missing を補充                                 |
-| `status` | なし   | pm 検出結果・lock 保持・宣言件数                                          |
+| `status` | なし   | 全 pm の検出結果・lock 保持・宣言件数 (pm 未検出でも動く)                 |
 
 **削除はしない。** 宣言から消えたパッケージは報告のみ。apt / dnf / yum / zypper の
 autoremove は他パッケージごと巻き込むため、`remove` コマンドは backend に持たせない。
@@ -264,14 +272,16 @@ autoremove は他パッケージごと巻き込むため、`remove` コマンド
 
 ## 検証
 
-4 層で守る。
+6 層で守る。
 
-| check               | 何を見る                                                      |
-| ------------------- | ------------------------------------------------------------- |
-| `checks.eval`       | 宣言検査が本当に落ちるか。受理・却下ケースを文言ごと比較する  |
-| `checks.shellcheck` | 連結前のソースをファイル単位で lint                           |
-| `checks.fake-path`  | 5 pm すべてのコマンド生成と照合を、PATH 差し替えで実測する    |
-| `checks.consumer`   | 公開 API を実際に input に載せた消費側 flake を評価・起動する |
+| check               | 何を見る                                                        |
+| ------------------- | --------------------------------------------------------------- |
+| `checks.eval`       | 宣言・正規化・update 検証が本当に落ちるかを受理・却下で固定する |
+| `checks.shellcheck` | 連結前のソースと fake-path ハーネスを lint する                 |
+| `checks.actionlint` | CI workflow を actionlint で検証する                            |
+| `checks.fake-path`  | 5 pm すべてのコマンド生成と照合を、PATH 差し替えで実測する      |
+| `checks.consumer`   | 公開 API を実際に input に載せた消費側 flake を評価・起動する   |
+| `checks.treefmt`    | `nix fmt` の整形チェック (treefmt-nix が出す)                   |
 
 `checks.consumer` は `flake-parts.lib.mkFlake` に入力一式と
 `tests/consumer/module.nix` を渡して、消費側の flake をそのまま組み立てる。
@@ -285,6 +295,10 @@ home-manager 側は選択肢が `home.packages` の 1 つだけなので、`lib.
 `checks.fake-path` は `tests/fake-path/` のスタブで pm コマンドを差し替える。
 ホストに 1 つしかない pm も、PATH を差し替えれば 5 pm すべての経路を通せる
 (パッケージの実際の導入・更新は行わない。`sudo` も呼ばない)。
+
+`update.flags` を焼き込んだ nlp と `update.enable = false` の nlp も渡す。
+前者は更新コマンドの末尾にフラグが 1 引数ずつ付くこと、後者は更新コマンドを
+一切呼ばずに終了コード 2 で拒否することを固定する。
 
 さらに `checks.fake-path` には **hostile 版 nlp** も渡す。宣言検査を
 意図的に飛ばして作った nlp で、`$(touch PWNED)` や `x; touch PWNED` や

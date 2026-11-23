@@ -17,7 +17,7 @@ usage: nix run .#<command>
   adopt    明示導入済みを宣言の雛形として出す (副作用なし)
   apply    不足しているパッケージを導入する
   update   パッケージマネージャーを更新してから不足分を補う
-  status   検出したパッケージマネージャーと宣言の件数
+  status   全 pm の検出結果と宣言の件数 (pm 未検出でも動く)
 
 adopt は標準出力に宣言そのものだけを出します。人が読む行は標準エラーです。
 
@@ -62,6 +62,14 @@ main() {
     esac
   done
 
+  # status は全 pm を一覧するだけなので、検出された pm は要らない。
+  # pm が 1 つも無いホストでも「not found」と報告できるように先に捌く
+  if [ "$cmd" = "status" ]; then
+    printf '  %sstatus · %s%s\n' "$C_D" "$(host_id)" "$C_0"
+    do_status
+    return $?
+  fi
+
   if ! pm="$(detect_pm)"; then
     printf '  %s%s を確認できるパッケージマネージャーがありません%s\n' \
       "$C_R" "${PM_ORDER[*]}" "$C_0" >&2
@@ -82,7 +90,6 @@ main() {
   adopt) do_adopt "$pm" ;;
   apply) do_apply "$pm" ;;
   update) do_update "$pm" ;;
-  status) do_status "$pm" ;;
   esac
 }
 

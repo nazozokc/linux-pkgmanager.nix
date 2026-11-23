@@ -21,7 +21,7 @@ let
   backends = import ./lib/backends.nix;
   inherit (import ./lib/declared.nix { inherit lib backends; }) validate;
   mkNlp = import ./lib/mk-nlp.nix { inherit lib backends validate; };
-  normalize = import ./lib/normalize.nix { inherit lib backends; };
+  normalizeUpdate = import ./lib/update.nix { inherit lib backends; };
 
   commandNames = [
     "diff"
@@ -46,7 +46,11 @@ in
     autoDetect = lib.mkOption {
       type = lib.types.bool;
       default = false;
-      description = "実行環境で利用可能なパッケージマネージャーを自動検出して有効化";
+      description = ''
+        true にすると全 pm 分の宣言を作る。
+        評価時にホストの pm は分からない (pure 評価を壊さないため) ので、
+        実際にどの pm を使うかは実行時の PATH 検出が決める。
+      '';
     };
 
     commonPackages = lib.mkOption {
@@ -62,9 +66,11 @@ in
     };
 
     managers = lib.mkOption {
-      type = lib.types.attrsOf (lib.types.submodule {
-        options.enable = lib.mkEnableOption "このマネージャーを有効化する";
-      });
+      type = lib.types.attrsOf (
+        lib.types.submodule {
+          options.enable = lib.mkEnableOption "このマネージャーを有効化する";
+        }
+      );
       default = { };
       description = "有効マネージャーを明示的に指定する";
     };
@@ -72,19 +78,34 @@ in
     update = lib.mkOption {
       type = lib.types.submodule {
         options = {
-          enable = lib.mkEnableOption "更新機能を有効にする";
+          enable = lib.mkOption {
+            type = lib.types.bool;
+            default = true;
+            description = ''
+              false にすると nlp-update app を出さず、実行体の update も拒否する。
+            '';
+          };
           onActivation = lib.mkOption {
             type = lib.types.bool;
             default = false;
-            description = "activation 時の自動更新（安全側でデフォルトfalse）";
+            description = ''
+              非対応。true にすると評価時に落ちる。
+              activation に sudo を挟むと非対話の switch と CI が詰まるため、
+              switch のあとに nlp update を手動で実行する。
+            '';
           };
           flags = lib.mkOption {
             type = lib.types.attrsOf (lib.types.listOf lib.types.str);
             default = { };
+            description = ''
+              pm ごとの更新コマンドへ末尾に足す引数。1 要素 = 1 引数。
+              例: flags.pacman = [ "--refresh" ]。
+            '';
           };
         };
       };
       default = { };
+      description = "更新コマンドの設定 (nlp update)";
     };
 
     # Low-level
@@ -132,22 +153,31 @@ in
     { pkgs, ... }:
     let
       normalize = import ./lib/normalize.nix { inherit lib backends; };
+      updateCfg = normalizeUpdate config.nlp.update;
       declaredNormalized =
         if config.nlp.declared != { } then
           config.nlp.declared
         else
           normalize.normalizeDeclared {
             enable = true;
-            inherit (config.nlp) autoDetect commonPackages packages managers;
+            inherit (config.nlp)
+              autoDetect
+              commonPackages
+              packages
+              managers
+              ;
           };
       built = import ./lib/apps.nix {
         inherit lib pkgs;
         nlp = mkNlp {
           inherit pkgs;
           declared = declaredNormalized;
+          update = updateCfg;
         };
         inherit (config.nlp) appPrefix defaultApp;
+        update = updateCfg.enable;
       };
+
     in
     {
       # perSystem のモジュールとして返す。mkIf をモジュール全体に掛けると
