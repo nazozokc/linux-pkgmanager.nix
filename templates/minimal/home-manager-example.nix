@@ -2,30 +2,22 @@
 # Pass `inputs` via home-manager's specialArgs when importing this file.
 { inputs, ... }:
 {
-  # flakeModules.home-manager avoids the unknown flake output warning
-  # that homeManagerModules produces under `nix flake check`.
   imports = [ inputs.linux-pkgmanager.flakeModules.home-manager ];
+
+  # flat な packages だけで distro 横断の dotfiles が書ける。
+  # autoDetect は既定 true なので指定不要。
   programs.nlp = {
     enable = true;
-    autoDetect = true;
-    commonPackages = [
+    packages = [
       "curl"
       "git"
       "jq"
     ];
-    packages = {
-      apt = [
-        "bat"
-        "eza"
-      ];
-      pacman = [
-        "bat"
-        "eza"
-      ];
-      dnf = [
-        "bat"
-        "eza"
-      ];
-    };
+
+    # pm 固有のものだけ分けて書く
+    packagesByPm.pacman = [
+      "bat"
+      "eza"
+    ];
   };
 }

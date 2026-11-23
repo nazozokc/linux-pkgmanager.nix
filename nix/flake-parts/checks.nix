@@ -251,6 +251,16 @@ in
 
       homeOff = evalHome { programs.nlp.declared.pacman = ../../packages/pacman.nix; };
 
+      # dotfiles 向けの flat API も公開モジュール経由で評価する
+      homeFlat = evalHome {
+        programs.nlp = {
+          enable = true;
+          packages = [ "curl" ];
+          packagesByPm.apt = [ "bat" ];
+        };
+      };
+      homeFlatPackages = homeFlat.home.packages or [ ];
+
       # home.packages に入るのは「nlp 1 つ」だけなので、
       # enable = true は 1 件 / false は 0 件で比べる
       homeOnPackages = homeOn.home.packages or [ ];
@@ -305,6 +315,12 @@ in
         (assertion "enable = false では home.packages に入らない" (
           homeOffPackages == [ ]
         ) "実際: ${builtins.toString (builtins.length homeOffPackages)} 個")
+        (assertion "home-manager の autoDetect は既定 true" (
+          homeFlat.programs.nlp.autoDetect == true
+        ) "実際: ${builtins.toString homeFlat.programs.nlp.autoDetect}")
+        (assertion "flat な packages でも home.packages に nlp が載る" (
+          builtins.length homeFlatPackages == 1 && (lib.head homeFlatPackages).name == "nlp"
+        ) "実際: ${builtins.toString (builtins.length homeFlatPackages)} 個")
         (assertion "update.enable = false では update app を出さない" (
           !(builtins.elem "update" (builtins.attrNames appsNoUpdate))
           && builtins.elem "diff" (builtins.attrNames appsNoUpdate)

@@ -17,26 +17,14 @@
 
       imports = [ linux-pkgmanager.flakeModules.default ];
 
+      # dotfiles らしく 1 つのリストだけ書けば全 pm で動く
       nlp = {
         enable = true;
-        autoDetect = true;
-        packages = {
-          apt = [
-            "curl"
-            "git"
-            "jq"
-          ];
-          pacman = [
-            "curl"
-            "git"
-            "jq"
-          ];
-          dnf = [
-            "curl"
-            "git"
-            "jq"
-          ];
-        };
+        packages = [
+          "curl"
+          "git"
+          "jq"
+        ];
       };
     };
 }

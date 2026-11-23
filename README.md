@@ -20,21 +20,23 @@
       systems = [ "x86_64-linux" "aarch64-linux" ];
       imports = [ inputs.linux-pkgmanager.nix.flakeModules.default ];
 
+      # 1 つのリストを書くだけ。全 pm 分の宣言を作り、
+      # 実際に使う pm は実行時の PATH で決まる
       nlp = {
         enable = true;
-        packages = {
-          pacman = [ "bat" "eza" "curl" ];
-          apt = [ "bat" "eza" "curl" ];
-          dnf = [ "bat" "eza" "curl" ];
-        };
+        packages = [
+          "bat"
+          "eza"
+          "curl"
+        ];
       };
     };
 }
 ```
 
-`packages` に書いた pm が対象になる。`autoDetect = true` を足すと、5 pm すべてに
-`commonPackages` を配った宣言を作る（実際にどの pm を使うかは実行時の PATH で決まる）。
-`./packages/apt.nix` のようなファイルを渡してもよい（[宣言の書き方](#宣言の書き方)）。
+`autoDetect` は既定で `true`。`packages` のリストが 5 pm すべてに配られ、
+実際にどの pm を使うかは実行時の PATH で決まる。pm 固有の追加は
+`packagesByPm.pacman = [ ... ]` のように書く（[宣言の書き方](#宣言の書き方)）。
 
 ```console
 $ nix run .#nlp-diff     # 不足分を見る (副作用なし)
@@ -48,12 +50,15 @@ $ nix run .#nlp-apply    # 不足分だけ入れる
   imports = [ inputs.linux-pkgmanager.nix.flakeModules.home-manager ];
   programs.nlp = {
     enable = true;
-    commonPackages = [ "curl" "git" "jq" ];
-    packages = {
-      pacman = [ "bat" "eza" ];
-      apt = [ "bat" "eza" ];
-      dnf = [ "bat" "eza" ];
-    };
+    packages = [
+      "curl"
+      "git"
+      "jq"
+    ];
+    packagesByPm.pacman = [
+      "bat"
+      "eza"
+    ];
   };
 }
 ```
@@ -236,43 +241,39 @@ nlp.declared = {
 };
 ```
 
-### 高位: `packages` / `commonPackages` / `managers`
+### 高位: `packages` / `packagesByPm` / `managers`
 
-短い宣言を書くための層。`nix/lib/normalize.nix` が `declared` と同じ形に落とす。
+dotfiles の主入力は `packages`（素のリスト）。`autoDetect` は既定 `true` なので、
+これだけで全 pm 分の宣言になる。`nix/lib/normalize.nix` が `declared` と同じ形に落とす。
 
 ```nix
 nlp = {
-  packages = {
-    pacman = [
-      "man-db"
-      "bash-completion"
-    ];
-    apt = [ "man-db" "bash-completion" ];
-  };
-  commonPackages = [ "curl" "git" ];
-  managers.dnf.enable = true; # packages に書かずに pm を有効にする
+  packages = [ "curl" "git" ];          # 全 pm に共通
+  packagesByPm.pacman = [ "man-db" ];   # pm 固有
+  packagesByPm.apt = ./packages/apt.nix; # ファイルでも書ける
+  managers.dnf.enable = true;           # パッケージなしで pm を有効にする
 };
 ```
 
 解決の順序（`nix/lib/normalize.nix`）:
 
-| 段階              | 内容                                                                                      |
-| ----------------- | ----------------------------------------------------------------------------------------- |
-| 1. どちらを使う   | `declared` が空でなければ `declared` だけを使う。高位はすべて無視する                     |
-| 2. 有効な pm      | `packages` に pm 名がある ∪ `managers.<pm>.enable = true` ∪ `autoDetect = true` なら全 pm |
-| 3. 宣言を組み立て | `packages.<pm> ++ commonPackages`。重複は 1 個に畳む                                      |
+| 段階              | 内容                                                                                     |
+| ----------------- | ---------------------------------------------------------------------------------------- |
+| 1. どちらを使う   | `declared` が空でなければ `declared` だけを使う。高位はすべて無視する                    |
+| 2. 有効な pm      | `packages` を書いたら全 pm ∪ `packagesByPm` に名前がある ∪ `managers.<pm>.enable = true` |
+| 3. 宣言を組み立て | `packagesByPm.<pm> ++ packages`。重複は 1 個に畳む                                       |
 
-現行の実装そのままの注意:
+注意:
 
-- `autoDetect = true` は pure eval でホストを判定できないので、**全 pm 分の宣言**
-  を作る。実際に使う pm は実行時に PATH を見て決まる（`status` は全 pm を一覧する）
-- `commonPackages` は「有効な pm」の宣言にだけ足される。有効な pm が 1 つも無い
-  と足す先が無いので、何もしない
-- `packages.<pm>` にファイル（パス）を書くと、そのパスがそのまま宣言になる。
-  `commonPackages` は連結しない
+- `autoDetect = false` にすると `packages` だけでは pm を有効にしない。
+  `packagesByPm` / `managers` で明示した pm にだけ `packages` を足す
+- `autoDetect` は pure eval でホストを判定できないので、**全 pm 分の宣言**を作る。
+  実際に使う pm は実行時に PATH を見て決まる（`status` は全 pm を一覧する）
+- `packagesByPm.<pm>` にファイル（パス）を書くと、そのパスがそのまま宣言になる。
+  `packages` は連結しない
+- `commonPackages` は `packages` の互換別名。新しい設定では `packages` を使う
 - `managers.<pm>.enable = false` は pm を宣言から外す指定ではない。
-  `packages.<pm>` を書いている pm は有効なまま残る。宣言から外すのは
-  `packages` から消すこと
+  `packagesByPm.<pm>` を書いている pm は有効なまま残る
 - `nlp.update` は `enable` / `flags` / `onActivation` を持つ（後述）
 - どちらの層でも宣言検査（[書けない名前](#書けない名前)）は同じものを通る
 
@@ -416,7 +417,7 @@ pm ごとに 1 ファイルなので、対象をまたぐ宣言は素直に書�
 apps.switch = config.apps.nlp-apply;
 ```
 
-`declared` の代わりに高位の `packages` / `commonPackages` / `managers` でもよい。
+`declared` の代わりに高位の `packages` / `packagesByPm` / `managers` でもよい。
 解決の規則は [宣言の書き方](#宣言の書き方) に書いたとおり。
 
 ```console
@@ -450,7 +451,8 @@ home-manager には `flakeModules.home-manager` を置く（`flakeModules.homeMa
 
   programs.nlp = {
     enable = true;
-    declared.pacman = ./packages/pacman.nix;
+    packages = [ "curl" "git" ];
+    packagesByPm.pacman = ./packages/pacman.nix;
   };
 }
 ```
@@ -462,7 +464,7 @@ $ nlp adopt             # 明示導入済みを宣言の雛形として出す (�
 $ nlp apply             # 不足分だけ導入する (switch のあと手動)
 ```
 
-`programs.nlp` には `declared` の代わりに `packages` / `commonPackages` /
+`programs.nlp` には `declared` の代わりに `packages` / `packagesByPm` /
 `managers` も書ける。解決の規則は flake-parts 版と同じ
 （[宣言の書き方](#宣言の書き方)）。`programs.nlp.package` を指定すれば、
 宣言はそのままに実行体だけを差し替えられる。

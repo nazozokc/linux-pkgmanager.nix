@@ -19,7 +19,7 @@ packages/<pm>.nix       pm ごとの宣言 (素のリスト)
 
 nix/lib/backends.nix    5 pm の純粋データ定義
 nix/lib/declared.nix    宣言の検査 (問題を文字列のリストで返す + throw)
-nix/lib/normalize.nix   高位オプション (packages / managers / autoDetect) を declared へ落とす
+nix/lib/normalize.nix   高位オプション (packages / packagesByPm / managers / autoDetect) を declared へ落とす
 nix/lib/update.nix      nlp.update の検証と正規化
 nix/lib/names.nix       受理する名前の規則 (検査と adopt の両方が使う)
 nix/lib/render.nix      ソース連結 + bash の単一引用符リテラル生成
@@ -97,8 +97,10 @@ flake の input に置けるのは url / follows / inputs だけなので、宣�
 output と `_module.args` に同じ値を配る。公開しているファイルと
 `checks.consumer` が検査するファイルがずれると、公開 API の検査が意味を失う。
 
-`autoDetect = true` は Nix の純粋評価でホスト pm を決められないので、
+dotfiles では `packages = [ ... ]` の 1 行だけで全 pm を覆うのが主入力。
+`autoDetect` はそのため既定 `true` で、Nix の純粋評価でホスト pm を決められないので
 全 pm 分の宣言を作る。実際に使う pm は実行時の PATH で決める。
+pm 固有の差分だけ `packagesByPm.<pm>` に書く。
 `nlp.update.flags.<pm>` は pm 更新コマンドの末尾へ 1 要素 = 1 引数で足す。
 `onActivation = true` は非対話の `switch` と CI を壊すので評価時に拒否する。
 

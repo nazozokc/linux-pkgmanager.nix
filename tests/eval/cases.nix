@@ -292,11 +292,15 @@ let
     ]
     ++ map normalizeCases [
       [
-        "autoDetect は全 pm の宣言を作る"
+        "autoDetect は既定で全 pm の宣言を作る"
+        { }
+        (lib.genAttrs (lib.attrNames backends) (_: [ ]))
+      ]
+      [
+        "packages は全 pm に commonPackages と同じように足る"
         {
-          autoDetect = true;
-          commonPackages = [ "curl" ];
-          packages.pacman = [ "git" ];
+          packages = [ "curl" ];
+          packagesByPm.pacman = [ "git" ];
         }
         (
           lib.genAttrs (lib.attrNames backends) (_: [ "curl" ])
@@ -309,10 +313,11 @@ let
         )
       ]
       [
-        "packages と managers は和集合"
+        "autoDetect を切ると packages / packagesByPm / managers の和集合になる"
         {
-          commonPackages = [ "curl" ];
-          packages.apt = [ "bat" ];
+          autoDetect = false;
+          packages = [ "curl" ];
+          packagesByPm.apt = [ "bat" ];
           managers.dnf.enable = true;
         }
         {
@@ -324,21 +329,33 @@ let
         }
       ]
       [
-        "ファイル宣言には commonPackages を足さない"
+        "ファイル宣言には packages を足さない"
         {
-          commonPackages = [ "curl" ];
-          packages.pacman = ./fixtures/list-ok.nix;
+          autoDetect = false;
+          packages = [ "curl" ];
+          packagesByPm.pacman = ./fixtures/list-ok.nix;
         }
         {
           pacman = ./fixtures/list-ok.nix;
         }
       ]
       [
-        "enable = false なら何も宣言しない"
+        "commonPackages は packages の互換別名として効く"
         {
-          enable = false;
-          autoDetect = true;
+          autoDetect = false;
+          commonPackages = [ "curl" ];
+          packagesByPm.apt = [ "bat" ];
         }
+        {
+          apt = [
+            "bat"
+            "curl"
+          ];
+        }
+      ]
+      [
+        "enable = false なら何も宣言しない"
+        { enable = false; }
         { }
       ]
     ];

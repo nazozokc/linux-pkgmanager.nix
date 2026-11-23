@@ -7,6 +7,6 @@ nix run .#nlp-apply
 nix run .#nlp-update
 ```
 
-`autoDetect = true` declares the packages for every backend. Which backend is used is decided at runtime from `PATH`, so the same flake works on apt/pacman/dnf hosts.
+`nlp.packages` is a flat list. `autoDetect` defaults to `true`, so the same list is declared for every backend and the backend actually used is picked from `PATH` at runtime. Use `nlp.packagesByPm.<pm>` only for pm-specific packages.
 
-For home-manager, pass `inputs` through `specialArgs` and import `home-manager-example.nix`, which uses `flakeModules.home-manager` (no unknown-output warning).
+For home-manager, pass `inputs` through `specialArgs` and import `home-manager-example.nix`, which uses `flakeModules.home-manager`.

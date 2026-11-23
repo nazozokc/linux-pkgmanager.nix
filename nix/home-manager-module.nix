@@ -4,7 +4,8 @@
 #   imports = [ inputs.linux-pkgmanager.nix.flakeModules.home-manager ];
 #   programs.nlp = {
 #     enable = true;
-#     declared.pacman = ./packages/pacman.nix;
+#     packages = [ "bat" "eza" ];              # 全 pm に共通 (autoDetect 既定 true)
+#     packagesByPm.pacman = [ "man-db" ];      # pm 固有
 #   };
 #
 # やるのは「宣言を焼き込んだ nlp を home.packages に載せる」だけ。
@@ -43,6 +44,7 @@ let
           autoDetect
           commonPackages
           packages
+          packagesByPm
           managers
           ;
       };
@@ -65,24 +67,31 @@ in
     # High-level convenience options
     autoDetect = lib.mkOption {
       type = lib.types.bool;
-      default = false;
+      default = true;
       description = ''
-        true にすると全 pm 分の宣言を作る。
+        全 pm 分の宣言を作る (既定 true)。
         評価時にホストの pm は分からない (pure 評価を壊さないため) ので、
         実際にどの pm を使うかは実行時の PATH 検出が決める。
+        特定の pm だけを対象にしたいときは false にして packagesByPm を書く。
       '';
+    };
+
+    packages = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      description = "全 pm に共通して入れたいパッケージ名のリスト (dotfiles の主入力)";
+    };
+
+    packagesByPm = lib.mkOption {
+      type = lib.types.attrsOf (lib.types.either (lib.types.listOf lib.types.str) lib.types.path);
+      default = { };
+      description = "pm 固有のパッケージ一覧。値はリストでもファイルでも書ける";
     };
 
     commonPackages = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
-      description = "全ての有効マネージャーに共通して追加するパッケージ一覧";
-    };
-
-    packages = lib.mkOption {
-      type = lib.types.attrsOf (lib.types.either (lib.types.listOf lib.types.str) lib.types.path);
-      default = { };
-      description = "マネージャー別パッケージ一覧 (トップレベルで集約)";
+      description = "packages の互換用別名。新しい設定では packages を使う";
     };
 
     managers = lib.mkOption {
